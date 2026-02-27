@@ -18,7 +18,7 @@
 | 命令 | 说明 |
 |------|------|
 | `macpower on` | 开启低功耗保活模式（默认只影响 **插电 AC**），网络未连接时自动 SKIP |
-| `macpower on --force` | 开启低功耗保活模式，跳过网络检测 |
+| `macpower on --force` | 开启低功耗保活模式，**仅**跳过网络检测（不改变作用域，默认仍是 AC） |
 | `macpower off` | 应用保守预设（**非出厂默认**，详见说明） |
 | `macpower save` | 备份当前 `pmset -g custom` 到 `~/.macpower.pmset.bak`（权限 600） |
 | `macpower restore` | 从备份回滚（推荐优先用这个） |
@@ -39,6 +39,7 @@
 - 当前处于哪个模式（低功耗保活 / 非保活）
 - 系统休眠与屏幕熄灭的实际时间
 - **能否离开电脑跑长期任务（YES / NO）**
+- 在电池供电时，是否因 AC-only 配置导致当前未生效
 
 示例（低功耗保活已开启）：
 ```
@@ -146,8 +147,9 @@ sudo /usr/sbin/visudo -cf /etc/sudoers.d/macpower
 
 ### 手动开启/恢复
 ```bash
-macpower on          # 开启低功耗保活模式（需有网络连接）
-macpower on --force  # 开启低功耗保活模式（跳过网络检测）
+macpower on          # 开启低功耗保活模式（默认只改 AC，需有网络连接）
+macpower on --force  # 仅跳过网络检测；作用域仍默认 AC
+macpower on --all    # 同时修改 AC + Battery（电池下立即生效）
 macpower status      # 查看当前模式和长期任务支持状态
 macpower restore     # 推荐：从备份回滚到原始设置
 macpower off         # 应用保守预设（非出厂默认）
@@ -200,18 +202,32 @@ tail -n 50 ~/Library/Logs/macpower/night.log
 ```bash
 macpower on --force
 ```
+注意：`--force` 只跳过网络检测，不会把默认作用域从 AC 改为 ALL。
 
-### 4) 磁盘休眠（disksleep 5）会影响运行中的程序吗？
+### 4) 为什么看到 `Enabled` 但 `status` 里仍是“长期任务支持：NO”？
+
+常见于你当前在 `Battery Power`，且执行的是默认 AC-only 命令（`macpower on` / `macpower on --force`）。
+
+- 这类命令只修改 AC 配置，电池配置不会立即改变
+- 因此你会看到“已启用”，但当前生效值仍按 Battery 配置，属于预期
+
+如果要在电池下立即进入保活模式，请执行：
+```bash
+macpower on --all --force
+```
+或者插上电源后再使用 AC 配置。
+
+### 5) 磁盘休眠（disksleep 5）会影响运行中的程序吗？
 
 **不影响。** 磁盘休眠只是让存储硬件进入省电状态，CPU、内存、网络全部保持活跃。运行中的程序和网络连接不依赖磁盘。如果程序需要写磁盘（写日志等），macOS 会在毫秒级内自动唤醒磁盘，进程透明等待，不会报错或中断。
 
-### 5) 查看日志
+### 6) 查看日志
 ```bash
 tail -n 200 ~/Library/Logs/macpower/night.log ~/Library/Logs/macpower/night.err
 tail -n 200 ~/Library/Logs/macpower/morning.log ~/Library/Logs/macpower/morning.err
 ```
 
-### 6) 想改时间（比如 22:30 / 7:30）
+### 7) 想改时间（比如 22:30 / 7:30）
 编辑 `~/Library/LaunchAgents/*.plist` 的 `StartCalendarInterval`，然后重新加载：
 ```bash
 DOMAIN="gui/$(id -u)"
@@ -221,14 +237,14 @@ launchctl bootstrap "$DOMAIN" ~/Library/LaunchAgents/com.user.macpower.night.pli
 launchctl bootstrap "$DOMAIN" ~/Library/LaunchAgents/com.user.macpower.morning.plist
 ```
 
-### 7) 如果你确实想偶尔合盖跑（可选）
+### 8) 如果你确实想偶尔合盖跑（可选）
 脚本保留了"显式合盖跑"开关：
 ```bash
 macpower-auto night --clamshell
 ```
 它会要求检测到外接显示器（HDMI / DisplayPort / Thunderbolt / USB-C），否则拒绝（避免合盖实际睡眠断网）。
 
-### 8) 恢复失败怎么办？
+### 9) 恢复失败怎么办？
 
 如果 `macpower restore` 或 `macpower-auto morning` 报 WARN 错误：
 - 某些多词参数（如 `Sleep On Power Button`）在备份解析时可能报 WARN，**不影响核心参数恢复**

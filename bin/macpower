@@ -12,7 +12,8 @@ set -euo pipefail
 #
 # Notes:
 # - Default scope is AC only (-c). Use --all / -a to apply to all.
-# - macpower on checks for network connectivity before applying. Use --force to skip.
+# - macpower on checks for network connectivity before applying. Use --force to skip
+#   network check only; scope remains AC unless --all/-a is specified.
 # - Uses sudo to run /usr/bin/pmset. For automation, configure sudoers NOPASSWD for /usr/bin/pmset.
 # - Backup file: ~/.macpower.pmset.bak (saved from `pmset -g custom`)
 
@@ -37,7 +38,7 @@ Examples:
 Notes:
 - Default scope is AC only (-c). Use --all / -a to apply to all.
 - macpower on checks for network connectivity (Wi-Fi or Ethernet) before
-  applying. Use --force to skip this check.
+  applying. Use --force to skip this check only (scope is still AC unless --all/-a).
 - macpower off applies a conservative preset (NOT factory defaults).
   For true factory settings, use: macpower restore (requires prior: macpower save)
 - For non-interactive runs (launchd), configure sudoers to allow NOPASSWD: /usr/bin/pmset
@@ -49,6 +50,18 @@ is_network_connected() {
   # interface (Wi-Fi or Ethernet) is connected and has a gateway.
   # Uses route table lookup — instant, no packets sent, firewall-safe.
   /sbin/route get default 2>/dev/null | grep -q "interface:"
+}
+
+get_power_source() {
+  local line
+  line="$(/usr/bin/pmset -g batt 2>/dev/null | head -n 1)"
+  if echo "$line" | grep -q "AC Power"; then
+    echo "ac"
+  elif echo "$line" | grep -q "Battery Power"; then
+    echo "battery"
+  else
+    echo "unknown"
+  fi
 }
 
 detect_night_policy() {
@@ -69,9 +82,45 @@ detect_night_policy() {
   echo "$out" | grep -qE "^\s*tcpkeepalive\s+1(\s|$)"
 }
 
+detect_ac_policy_from_custom() {
+  # Detect whether the AC block in "pmset -g custom" matches the night-policy
+  # targets. This helps explain why AC-only apply does not affect Battery mode.
+  local out block="" key value
+  local ac_sleep="" ac_standby="" ac_powernap="" ac_displaysleep="" ac_disksleep="" ac_tcpkeepalive=""
+  out="$(/usr/bin/pmset -g custom 2>/dev/null || true)"
+
+  while IFS= read -r line; do
+    if echo "$line" | grep -qE "^Battery Power:"; then block="batt"; continue; fi
+    if echo "$line" | grep -qE "^AC Power:"; then block="ac"; continue; fi
+    if echo "$line" | grep -qE "^UPS Power:"; then block="ups"; continue; fi
+    [[ "$block" == "ac" ]] || continue
+
+    key="$(echo "$line" | awk '{print $1}')"
+    value="$(echo "$line" | awk '{print $2}')"
+
+    case "$key" in
+      sleep)        ac_sleep="$value" ;;
+      standby)      ac_standby="$value" ;;
+      powernap)     ac_powernap="$value" ;;
+      displaysleep) ac_displaysleep="$value" ;;
+      disksleep)    ac_disksleep="$value" ;;
+      tcpkeepalive) ac_tcpkeepalive="$value" ;;
+      *)            ;;
+    esac
+  done <<< "$out"
+
+  [[ "$ac_sleep" == "0" ]] && \
+  [[ "$ac_standby" == "0" ]] && \
+  [[ "$ac_powernap" == "0" ]] && \
+  [[ "$ac_displaysleep" == "1" ]] && \
+  [[ "$ac_disksleep" == "5" ]] && \
+  [[ "$ac_tcpkeepalive" == "1" ]]
+}
+
 print_mode_summary() {
-  local power_source
+  local power_source power_source_kind
   power_source="$(/usr/bin/pmset -g batt 2>/dev/null | head -n 1)"
+  power_source_kind="$(get_power_source)"
 
   local is_night="0"
   # [M-2] detect_night_policy only uses exit code, no output to redirect
@@ -111,6 +160,19 @@ print_mode_summary() {
     echo "│     • Wi-Fi 可能断开连接：✗"
     echo "│     • 不适合离开电脑跑后台任务：✗"
     echo "│     • 若要跑任务，需先运行：macpower on"
+
+    if [[ "$power_source_kind" == "battery" ]]; then
+      echo "│"
+      if detect_ac_policy_from_custom; then
+        echo "│  ⚠️ 说明：当前是 Battery Power，你启用的可能是 AC-only 配置。"
+        echo "│     • AC 已是保活参数，但电池仍按 Battery 配置运行"
+        echo "│     • 若要在电池下立即生效：macpower on --all --force"
+        echo "│     • 或者插电后按 AC 策略运行"
+      else
+        echo "│  ℹ️ 说明：若你刚执行过 macpower on（默认只改 AC），这是预期结果。"
+        echo "│     • 在电池下立即生效请运行：macpower on --all --force"
+      fi
+    fi
   fi
 
   echo "│"
@@ -258,6 +320,11 @@ main() {
       echo "🔧 Enabling low-power always-online mode (scope: ${scope})..."
       apply_policy "${scope_flag}"
       echo "✅ Enabled."
+      if [[ "$scope" == "ac" ]] && [[ "$(get_power_source)" == "battery" ]]; then
+        echo "⚠️  当前电源来源是 Battery Power：本次仅修改了 AC 配置，当前不会立即进入保活模式。"
+        echo "   若要在电池下立即生效：macpower on --all --force"
+        echo "   或插上电源后使用 AC 配置。"
+      fi
       echo ""
       print_status
       ;;
