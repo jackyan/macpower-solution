@@ -47,7 +47,13 @@ wifi_ssid() {
   local dev
   dev="$(wifi_device || true)"
   [[ -z "${dev:-}" ]] && return 1
-  /usr/sbin/networksetup -getairportnetwork "$dev" 2>/dev/null | sed 's/^Current Wi-Fi Network: //'
+  # networksetup -getairportnetwork is deprecated on macOS Sonoma/Sequoia and
+  # returns "You are not associated with an AirPort network." even when connected.
+  # ipconfig getsummary is the reliable modern replacement.
+  local ssid
+  ssid="$(/usr/sbin/ipconfig getsummary "$dev" 2>/dev/null | awk '/[[:space:]]SSID[[:space:]]*:/{print $NF; exit}')"
+  [[ -z "$ssid" ]] && return 1
+  echo "$ssid"
 }
 
 lid_state() {
