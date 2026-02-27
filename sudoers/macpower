@@ -1,0 +1,12 @@
+# macpower automation sudoers (template)
+# Install via:
+#   sudo visudo -f /etc/sudoers.d/macpower
+#
+# Replace YOUR_USERNAME with your local macOS username (whoami).
+#
+# This grants passwordless access to /usr/bin/pmset only.
+# This is required for launchd (non-interactive) to apply pmset changes.
+#
+# Security note: this allows the user to run pmset without a password.
+
+YOUR_USERNAME ALL=(root) NOPASSWD: /usr/bin/pmset

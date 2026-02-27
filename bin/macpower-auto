@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# macpower-auto v3.3 — smart night automation wrapper (NO process dependency)
+#
+# - Conservative by default: only runs when on AC + Wi‑Fi connected.
+# - Lid closed is SKIP unless you manually pass --clamshell.
+# - Writes a mark file when night mode is active (or already active) so morning restore is safe.
+#
+# Usage:
+#   macpower-auto night [--clamshell]
+#   macpower-auto morning
+#   macpower-auto status
+
+# Resolve macpower path robustly
+if [[ -x "/opt/homebrew/bin/macpower" ]]; then
+  MACPOWER="/opt/homebrew/bin/macpower"
+elif [[ -x "/usr/local/bin/macpower" ]]; then
+  MACPOWER="/usr/local/bin/macpower"
+else
+  MACPOWER="$(cd "$(dirname "$0")" && pwd)/macpower"
+fi
+
+BACKUP_FILE="${HOME}/.macpower.pmset.bak"
+MARK_FILE="${HOME}/.macpower.night.enabled"
+
+# Night policy target (effective values when enabled)
+TARGET_SLEEP="0"
+TARGET_STANDBY="0"
+TARGET_AUTOPOWEROFF="0"
+TARGET_POWERNAP="0"
+TARGET_DISPLAYSLEEP="1"
+TARGET_DISKSLEEP="5"
+
+log() { echo "[$(date '+%F %T')] $*"; }
+
+is_on_ac() {
+  /usr/bin/pmset -g batt | head -n 1 | grep -q "AC Power"
+}
+
+wifi_device() {
+  /usr/sbin/networksetup -listallhardwareports \
+    | awk '/Hardware Port: Wi-Fi/{getline; print $2}'
+}
+
+wifi_ssid() {
+  local dev
+  dev="$(wifi_device || true)"
+  [[ -z "${dev:-}" ]] && return 1
+  /usr/sbin/networksetup -getairportnetwork "$dev" 2>/dev/null | sed 's/^Current Wi-Fi Network: //'
+}
+
+lid_state() {
+  local v
+  v="$(/usr/sbin/ioreg -r -k AppleClamshellState -d 4 2>/dev/null | awk -F'= ' '/AppleClamshellState/{gsub(/"/,"",$2); print $2; exit}')"
+  case "$v" in
+    Yes) echo "closed" ;;
+    No)  echo "open" ;;
+    *)   echo "unknown" ;;
+  esac
+}
+
+has_external_display() {
+  /usr/sbin/system_profiler SPDisplaysDataType 2>/dev/null | grep -qE "Connection Type:|Display Connector|External"
+}
+
+ensure_backup() {
+  if [[ ! -f "$BACKUP_FILE" ]]; then
+    log "No backup found. Creating backup via: macpower save"
+    "$MACPOWER" save
+  fi
+}
+
+mark_enabled() {
+  {
+    echo "enabled_at=$(date '+%F %T')"
+    echo "reason=${1:-unknown}"
+  } > "$MARK_FILE"
+}
+
+clear_mark() {
+  rm -f "$MARK_FILE"
+}
+
+is_night_policy_active() {
+  local out
+  out="$(/usr/bin/pmset -g 2>/dev/null | sed -n '/Currently in use:/,$p')"
+
+  echo "$out" | grep -qE "^ standby\\s+${TARGET_STANDBY}(\\s|$)" || return 1
+  echo "$out" | grep -qE "^ sleep\\s+${TARGET_SLEEP}(\\s|$)" || return 1
+  echo "$out" | grep -qE "^ autopoweroff\\s+${TARGET_AUTOPOWEROFF}(\\s|$)" || return 1
+  echo "$out" | grep -qE "^ powernap\\s+${TARGET_POWERNAP}(\\s|$)" || return 1
+  echo "$out" | grep -qE "^ displaysleep\\s+${TARGET_DISPLAYSLEEP}(\\s|$)" || return 1
+  echo "$out" | grep -qE "^ disksleep\\s+${TARGET_DISKSLEEP}(\\s|$)" || return 1
+
+  return 0
+}
+
+night() {
+  local clamshell="0"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --clamshell) clamshell="1" ;;
+      *) log "Unknown option: $1"; echo "Usage: macpower-auto night [--clamshell]"; exit 2 ;;
+    esac
+    shift
+  done
+
+  log "macpower-auto night: start (clamshell=${clamshell})"
+
+  if ! is_on_ac; then
+    log "SKIP: not on AC power. (Expected if you usually don't plug in at night.)"
+    exit 0
+  fi
+
+  local ssid
+  ssid="$(wifi_ssid || true)"
+  if [[ -z "${ssid:-}" || "$ssid" == *"not associated"* ]]; then
+    log "SKIP: Wi-Fi not connected."
+    exit 0
+  fi
+  log "Wi-Fi SSID: ${ssid}"
+
+  local lid
+  lid="$(lid_state)"
+  log "Lid state: ${lid}"
+
+  if [[ "$lid" == "closed" && "$clamshell" != "1" ]]; then
+    log "SKIP: lid is closed. Run manually with --clamshell if you really want clamshell mode."
+    exit 0
+  fi
+
+  if [[ "$lid" == "closed" && "$clamshell" == "1" ]]; then
+    if has_external_display; then
+      log "External display detected (OK for clamshell)."
+    else
+      log "REFUSE: lid is closed but no external display/dummy detected. Clamshell likely won't work."
+      exit 1
+    fi
+  fi
+
+  # If already enabled (manual or previous run), do not re-apply; just ensure morning will restore.
+  if is_night_policy_active; then
+    log "Detected night policy already active (maybe enabled manually)."
+    if [[ ! -f "$MARK_FILE" ]]; then
+      mark_enabled "already_active"
+      log "Marked night enabled for morning restore: $MARK_FILE"
+    else
+      log "Night mark already present: $MARK_FILE"
+    fi
+    log "macpower-auto night: done (no changes applied)"
+    exit 0
+  fi
+
+  ensure_backup
+
+  log "Applying macpower on ..."
+  "$MACPOWER" on
+
+  mark_enabled "applied"
+  log "Marked night enabled: $MARK_FILE"
+
+  log "macpower-auto night: done"
+}
+
+morning() {
+  log "macpower-auto morning: start"
+
+  # Guardrail: only restore if we enabled/marked night mode before
+  if [[ ! -f "$MARK_FILE" ]]; then
+    log "SKIP: no night mark found ($MARK_FILE). Not touching power settings."
+    exit 0
+  fi
+
+  log "Night mark found. Proceeding to restore."
+
+  if [[ -f "$BACKUP_FILE" ]]; then
+    log "Restoring from backup via: macpower restore"
+    "$MACPOWER" restore
+  else
+    log "No backup file. Falling back to: macpower off"
+    "$MACPOWER" off
+  fi
+
+  clear_mark
+  log "Cleared night mark."
+
+  log "macpower-auto morning: done"
+}
+
+status() {
+  "$MACPOWER" status
+  echo ""
+  echo "Backup file: $BACKUP_FILE"
+  [[ -f "$BACKUP_FILE" ]] && echo "Backup: present" || echo "Backup: missing"
+  echo "Night mark: $MARK_FILE"
+  [[ -f "$MARK_FILE" ]] && echo "Night mark: present" || echo "Night mark: missing"
+  echo "AC Power: $([ "$(/usr/bin/pmset -g batt | head -n 1 | grep -c 'AC Power')" -eq 1 ] && echo yes || echo no)"
+  echo "Wi-Fi SSID: $(wifi_ssid || echo 'N/A')"
+  echo "Lid state: $(lid_state)"
+  has_external_display && echo "External display: yes" || echo "External display: no"
+  is_night_policy_active && echo "Night policy active: yes" || echo "Night policy active: no"
+}
+
+case "${1:-}" in
+  night) shift; night "$@" ;;
+  morning) morning ;;
+  status) status ;;
+  *)
+    echo "Usage: macpower-auto {night|morning|status}"
+    echo "  macpower-auto night [--clamshell]"
+    exit 1
+    ;;
+esac
