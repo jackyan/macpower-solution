@@ -9,4 +9,4 @@
 #
 # Security note: this allows the user to run pmset without a password.
 
-YOUR_USERNAME ALL=(root) NOPASSWD: /usr/bin/pmset
+henry.jack ALL=(root) NOPASSWD: /usr/bin/pmset

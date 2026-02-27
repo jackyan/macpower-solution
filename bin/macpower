@@ -39,9 +39,69 @@ Notes:
 USAGE
 }
 
-print_status() {
-  echo "🔎 Power source: $(/usr/bin/pmset -g batt 2>/dev/null | head -n 1)"
+detect_night_policy() {
+  # Check if current config matches night policy targets
+  local out
+  out="$(/usr/bin/pmset -g 2>/dev/null | sed -n '/Currently in use:/,$p')"
+
+  # All these conditions must be true for night policy to be active
+  echo "$out" | grep -qE "standby\s+0(\s|$)" && \
+  echo "$out" | grep -qE "sleep\s+0(\s|$)" && \
+  echo "$out" | grep -qE "powernap\s+0(\s|$)" && \
+  echo "$out" | grep -qE "displaysleep\s+1(\s|$)" && \
+  echo "$out" | grep -qE "disksleep\s+5(\s|$)" && \
+  echo "$out" | grep -qE "tcpkeepalive\s+1(\s|$)"
+}
+
+print_mode_summary() {
+  local power_source
+  power_source="$(/usr/bin/pmset -g batt 2>/dev/null | head -n 1)"
+
+  local is_night="0"
+  detect_night_policy >/dev/null 2>&1 && is_night="1"
+
+  echo "┌─ 📋 电源模式说明 ─────────────────────────────────────┐"
+  echo "│"
+
+  if [[ "$is_night" == "1" ]]; then
+    echo "│  当前模式：🌙 极致省电长期任务模式（Night Policy Active）"
+    echo "│"
+    echo "│  关键特性："
+    echo "│    • 系统永不休眠（sleep=0）：网络连接始终保活"
+    echo "│    • 快速屏幕熄灭（1分钟）：最小化功耗"
+    echo "│    • 磁盘快速休眠（5分钟）：节省磁盘电能"
+    echo "│    • TCP保活已启用（tcpkeepalive=1）"
+    echo "│"
+    echo "│  📌 长期任务支持：✅ YES"
+    echo "│     • 24小时不间断运行：✓"
+    echo "│     • Wi-Fi 保持连接：✓"
+    echo "│     • 网络通信稳定：✓"
+    echo "│     • 离开前无需干预：✓"
+  else
+    echo "│  当前模式：💤 标准/睡眠模式（Default/Standard Mode）"
+    echo "│"
+    echo "│  行为特性："
+    echo "│    • 系统会在 10 分钟左右进入睡眠"
+    echo "│    • 待机模式启用（standby=1）"
+    echo "│    • Power Nap 启用（powernap=1）"
+    echo "│    • 屏幕 10 分钟熄灭，磁盘 10 分钟休眠"
+    echo "│"
+    echo "│  📌 长期任务支持：❌ NO"
+    echo "│     • 系统会自动进入睡眠：✗"
+    echo "│     • Wi-Fi 可能断开连接：✗"
+    echo "│     • 不适合离开电脑跑后台任务：✗"
+    echo "│     • 若要跑任务，需先运行：macpower on"
+  fi
+
+  echo "│"
+  echo "│  电源来源：$power_source"
+  echo "│"
+  echo "└──────────────────────────────────────────────────────┘"
   echo ""
+}
+
+print_status() {
+  print_mode_summary
   echo "📌 Currently in use:"
   /usr/bin/pmset -g 2>/dev/null | sed -n '/Currently in use:/,$p' | head -n 60
   echo ""
