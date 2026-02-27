@@ -40,17 +40,20 @@ USAGE
 }
 
 detect_night_policy() {
-  # Check if current config matches night policy targets
+  # Check if current config matches night policy targets.
+  # NOTE: all patterns are anchored with ^\s* to prevent substring matches,
+  # e.g. "sleep" must not match "displaysleep" or "disksleep".
   local out
   out="$(/usr/bin/pmset -g 2>/dev/null | sed -n '/Currently in use:/,$p')"
 
-  # All these conditions must be true for night policy to be active
-  echo "$out" | grep -qE "standby\s+0(\s|$)" && \
-  echo "$out" | grep -qE "sleep\s+0(\s|$)" && \
-  echo "$out" | grep -qE "powernap\s+0(\s|$)" && \
-  echo "$out" | grep -qE "displaysleep\s+1(\s|$)" && \
-  echo "$out" | grep -qE "disksleep\s+5(\s|$)" && \
-  echo "$out" | grep -qE "tcpkeepalive\s+1(\s|$)"
+  # All these conditions must mirror apply_policy() exactly
+  echo "$out" | grep -qE "^\s*sleep\s+0(\s|$)" && \
+  echo "$out" | grep -qE "^\s*standby\s+0(\s|$)" && \
+  echo "$out" | grep -qE "^\s*autopoweroff\s+0(\s|$)" && \
+  echo "$out" | grep -qE "^\s*powernap\s+0(\s|$)" && \
+  echo "$out" | grep -qE "^\s*displaysleep\s+1(\s|$)" && \
+  echo "$out" | grep -qE "^\s*disksleep\s+5(\s|$)" && \
+  echo "$out" | grep -qE "^\s*tcpkeepalive\s+1(\s|$)"
 }
 
 print_mode_summary() {
@@ -78,16 +81,19 @@ print_mode_summary() {
     echo "│     • 网络通信稳定：✓"
     echo "│     • 离开前无需干预：✓"
   else
-    echo "│  当前模式：💤 标准/睡眠模式（Default/Standard Mode）"
+    local cur_sleep cur_displaysleep
+    cur_sleep="$(/usr/bin/pmset -g 2>/dev/null | sed -n '/Currently in use:/,$p' | awk '/^[[:space:]]*sleep[[:space:]]+/{print $2; exit}')"
+    cur_displaysleep="$(/usr/bin/pmset -g 2>/dev/null | sed -n '/Currently in use:/,$p' | awk '/^[[:space:]]*displaysleep[[:space:]]+/{print $2; exit}')"
+
+    echo "│  当前模式：💤 非夜间策略模式（Night Policy NOT Active）"
     echo "│"
-    echo "│  行为特性："
-    echo "│    • 系统会在 10 分钟左右进入睡眠"
-    echo "│    • 待机模式启用（standby=1）"
-    echo "│    • Power Nap 启用（powernap=1）"
-    echo "│    • 屏幕 10 分钟熄灭，磁盘 10 分钟休眠"
+    echo "│  行为特性（当前实际值）："
+    echo "│    • 系统休眠时间：${cur_sleep:-?} 分钟后（sleep=${cur_sleep:-?}）"
+    echo "│    • 屏幕熄灭时间：${cur_displaysleep:-?} 分钟后（displaysleep=${cur_displaysleep:-?}）"
+    echo "│    • 注意：系统休眠后 Wi-Fi 可能断开"
     echo "│"
     echo "│  📌 长期任务支持：❌ NO"
-    echo "│     • 系统会自动进入睡眠：✗"
+    echo "│     • 系统会自动进入睡眠（sleep ≠ 0）：✗"
     echo "│     • Wi-Fi 可能断开连接：✗"
     echo "│     • 不适合离开电脑跑后台任务：✗"
     echo "│     • 若要跑任务，需先运行：macpower on"
