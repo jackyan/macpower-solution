@@ -77,7 +77,7 @@ print_mode_summary() {
   echo "│"
 
   if [[ "$is_night" == "1" ]]; then
-    echo "│  当前模式：🌙 极致省电长期任务模式（Night Policy Active）"
+    echo "│  当前模式：🌙 极致省电长期任务模式（低功耗保活已开启）"
     echo "│"
     echo "│  关键特性："
     echo "│    • 系统永不休眠（sleep=0）：网络连接始终保活"
@@ -95,7 +95,7 @@ print_mode_summary() {
     cur_sleep="$(/usr/bin/pmset -g 2>/dev/null | sed -n '/Currently in use:/,$p' | awk '/^[[:space:]]*sleep[[:space:]]+/{print $2; exit}')"
     cur_displaysleep="$(/usr/bin/pmset -g 2>/dev/null | sed -n '/Currently in use:/,$p' | awk '/^[[:space:]]*displaysleep[[:space:]]+/{print $2; exit}')"
 
-    echo "│  当前模式：💤 非夜间策略模式（Night Policy NOT Active）"
+    echo "│  当前模式：💤 非低功耗保活模式（系统可能进入休眠）"
     echo "│"
     echo "│  行为特性（当前实际值）："
     echo "│    • 系统休眠时间：${cur_sleep:-?} 分钟后（sleep=${cur_sleep:-?}）"
