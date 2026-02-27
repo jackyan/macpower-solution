@@ -17,7 +17,7 @@
     <key>Minute</key><integer>0</integer>
   </dict>
 
-  <key>StandardOutPath</key><string>/tmp/macpower_morning.log</string>
-  <key>StandardErrorPath</key><string>/tmp/macpower_morning.err</string>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/macpower/morning.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/macpower/morning.err</string>
 </dict>
 </plist>
