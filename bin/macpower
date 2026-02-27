@@ -20,7 +20,7 @@ BACKUP_FILE="${HOME}/.macpower.pmset.bak"
 usage() {
   cat <<'USAGE'
 Usage:
-  macpower on [--all|-a]
+  macpower on [--all|-a] [--force]
   macpower off [--all|-a]
   macpower status
   macpower save
@@ -35,8 +35,17 @@ Examples:
 
 Notes:
 - Default scope is AC only (-c). Use --all / -a to apply to all.
+- macpower on checks for network connectivity (Wi-Fi or Ethernet) before
+  applying. Use --force to skip this check.
 - For non-interactive runs (launchd), configure sudoers to allow NOPASSWD: /usr/bin/pmset
 USAGE
+}
+
+is_network_connected() {
+  # Returns 0 (true) if a default route exists, meaning at least one network
+  # interface (Wi-Fi or Ethernet) is connected and has a gateway.
+  # Uses route table lookup — instant, no packets sent, firewall-safe.
+  /sbin/route get default 2>/dev/null | grep -q "interface:"
 }
 
 detect_night_policy() {
@@ -191,10 +200,12 @@ main() {
   shift || true
 
   local scope="ac"    # ac|all
+  local force="0"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --all|-a) scope="all" ;;
-      -h|--help) usage; exit 0 ;;
+      --all|-a)    scope="all" ;;
+      --force|-f)  force="1" ;;
+      -h|--help)   usage; exit 0 ;;
       *) echo "Unknown option: $1"; usage; exit 2 ;;
     esac
     shift
@@ -208,6 +219,12 @@ main() {
     save)    save_backup ;;
     restore) restore_backup ;;
     on)
+      if [[ "$force" != "1" ]] && ! is_network_connected; then
+        echo "⏭️  SKIP: No network connection detected (Wi-Fi and Ethernet both offline)."
+        echo "   Connect to a network first, then run: macpower on"
+        echo "   To override this check: macpower on --force"
+        exit 0
+      fi
       echo "🔧 Enabling low-power always-online mode (scope: ${scope})..."
       apply_policy "${scope_flag}"
       echo "✅ Enabled."
