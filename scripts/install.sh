@@ -20,13 +20,22 @@ choose_bin_dir() {
 
 BIN_DIR="$(choose_bin_dir)"
 
+# [H-5] Validate BIN_DIR does not contain characters that break sed or plist XML
+if [[ "$BIN_DIR" == *"|"* || "$BIN_DIR" == *"&"* ]]; then
+  echo "ERROR: BIN_DIR contains invalid character(s): $BIN_DIR"
+  exit 1
+fi
+
 echo "== macpower installer =="
 echo "Bundle: $BUNDLE_DIR"
 echo "Install bin dir: $BIN_DIR"
 echo ""
 
-mkdir -p "$BIN_DIR"
-sudo mkdir -p "$BIN_DIR" >/dev/null 2>&1 || true
+# [L-4] Single mkdir with fallback to sudo
+if [[ ! -d "$BIN_DIR" ]]; then
+  echo "Creating $BIN_DIR ..."
+  mkdir -p "$BIN_DIR" 2>/dev/null || sudo mkdir -p "$BIN_DIR"
+fi
 
 # Copy scripts
 sudo cp "$BUNDLE_DIR/bin/macpower" "$BIN_DIR/macpower"
@@ -40,13 +49,25 @@ MORN_PLIST_SRC="$BUNDLE_DIR/launchd/com.user.macpower.morning.plist"
 NIGHT_PLIST_DST="$HOME/Library/LaunchAgents/com.user.macpower.night.plist"
 MORN_PLIST_DST="$HOME/Library/LaunchAgents/com.user.macpower.morning.plist"
 
-# Replace hardcoded /opt/homebrew/bin with chosen bin dir
-sed "s|/opt/homebrew/bin|$BIN_DIR|g" "$NIGHT_PLIST_SRC" > "$NIGHT_PLIST_DST"
-sed "s|/opt/homebrew/bin|$BIN_DIR|g" "$MORN_PLIST_SRC" > "$MORN_PLIST_DST"
+# [M-6] Create persistent log directory under user's Library/Logs
+LOG_DIR="$HOME/Library/Logs/macpower"
+mkdir -p "$LOG_DIR"
+
+# Replace hardcoded /opt/homebrew/bin with chosen bin dir, and /tmp with log dir
+sed -e "s|/opt/homebrew/bin|$BIN_DIR|g" \
+    -e "s|/tmp/macpower_night\\.log|$LOG_DIR/night.log|g" \
+    -e "s|/tmp/macpower_night\\.err|$LOG_DIR/night.err|g" \
+    "$NIGHT_PLIST_SRC" > "$NIGHT_PLIST_DST"
+
+sed -e "s|/opt/homebrew/bin|$BIN_DIR|g" \
+    -e "s|/tmp/macpower_morning\\.log|$LOG_DIR/morning.log|g" \
+    -e "s|/tmp/macpower_morning\\.err|$LOG_DIR/morning.err|g" \
+    "$MORN_PLIST_SRC" > "$MORN_PLIST_DST"
 
 echo "Copied LaunchAgents to:"
 echo "  $NIGHT_PLIST_DST"
 echo "  $MORN_PLIST_DST"
+echo "Log directory: $LOG_DIR"
 echo ""
 
 echo "Step 1 (recommended): Create a pmset backup once:"
@@ -80,10 +101,14 @@ fi
 
 echo ""
 echo "Step 3: Load the scheduled tasks:"
-launchctl unload "$NIGHT_PLIST_DST" 2>/dev/null || true
-launchctl unload "$MORN_PLIST_DST" 2>/dev/null || true
-launchctl load "$NIGHT_PLIST_DST"
-launchctl load "$MORN_PLIST_DST"
+
+# [C-4] Use modern launchctl bootstrap/bootout instead of deprecated load/unload
+DOMAIN="gui/$(id -u)"
+
+launchctl bootout "${DOMAIN}" "$NIGHT_PLIST_DST" 2>/dev/null || true
+launchctl bootout "${DOMAIN}" "$MORN_PLIST_DST" 2>/dev/null || true
+launchctl bootstrap "${DOMAIN}" "$NIGHT_PLIST_DST"
+launchctl bootstrap "${DOMAIN}" "$MORN_PLIST_DST"
 
 echo "✅ Installed & loaded."
 echo ""

@@ -4,7 +4,7 @@ set -euo pipefail
 # macpower — Low-power always-online mode controller (AC-only by default)
 #
 # Usage:
-#   macpower on [--all|-a]
+#   macpower on [--all|-a] [--force]
 #   macpower off [--all|-a]
 #   macpower status
 #   macpower save
@@ -12,6 +12,7 @@ set -euo pipefail
 #
 # Notes:
 # - Default scope is AC only (-c). Use --all / -a to apply to all.
+# - macpower on checks for network connectivity before applying. Use --force to skip.
 # - Uses sudo to run /usr/bin/pmset. For automation, configure sudoers NOPASSWD for /usr/bin/pmset.
 # - Backup file: ~/.macpower.pmset.bak (saved from `pmset -g custom`)
 
@@ -37,6 +38,8 @@ Notes:
 - Default scope is AC only (-c). Use --all / -a to apply to all.
 - macpower on checks for network connectivity (Wi-Fi or Ethernet) before
   applying. Use --force to skip this check.
+- macpower off applies a conservative preset (NOT factory defaults).
+  For true factory settings, use: macpower restore (requires prior: macpower save)
 - For non-interactive runs (launchd), configure sudoers to allow NOPASSWD: /usr/bin/pmset
 USAGE
 }
@@ -71,7 +74,8 @@ print_mode_summary() {
   power_source="$(/usr/bin/pmset -g batt 2>/dev/null | head -n 1)"
 
   local is_night="0"
-  detect_night_policy >/dev/null 2>&1 && is_night="1"
+  # [M-2] detect_night_policy only uses exit code, no output to redirect
+  detect_night_policy && is_night="1" || true
 
   echo "┌─ 📋 电源模式说明 ─────────────────────────────────────┐"
   echo "│"
@@ -126,35 +130,55 @@ print_status() {
 }
 
 apply_policy() {
+  # [H-2] scope_flag is quoted to prevent word splitting
   local scope_flag="$1" # -c or -a
+  local errors=0
 
   # "Extreme low-power but always-online" targets:
   # - prevent system sleep / standby / autopoweroff
   # - keep screen off quickly and let disks sleep sooner
-  sudo /usr/bin/pmset ${scope_flag} sleep 0
-  sudo /usr/bin/pmset ${scope_flag} standby 0
-  sudo /usr/bin/pmset ${scope_flag} autopoweroff 0
-  sudo /usr/bin/pmset ${scope_flag} powernap 0
-  sudo /usr/bin/pmset ${scope_flag} displaysleep 1
-  sudo /usr/bin/pmset ${scope_flag} disksleep 5
-  sudo /usr/bin/pmset ${scope_flag} tcpkeepalive 1
+  # [C-1] Each pmset call tolerates individual failure to avoid partial-apply abort
+  sudo /usr/bin/pmset "${scope_flag}" sleep 0          || { echo "WARN: failed to set sleep"; ((errors++)) || true; }
+  sudo /usr/bin/pmset "${scope_flag}" standby 0        || { echo "WARN: failed to set standby"; ((errors++)) || true; }
+  sudo /usr/bin/pmset "${scope_flag}" autopoweroff 0   || { echo "WARN: failed to set autopoweroff"; ((errors++)) || true; }
+  sudo /usr/bin/pmset "${scope_flag}" powernap 0       || { echo "WARN: failed to set powernap"; ((errors++)) || true; }
+  sudo /usr/bin/pmset "${scope_flag}" displaysleep 1   || { echo "WARN: failed to set displaysleep"; ((errors++)) || true; }
+  sudo /usr/bin/pmset "${scope_flag}" disksleep 5      || { echo "WARN: failed to set disksleep"; ((errors++)) || true; }
+  sudo /usr/bin/pmset "${scope_flag}" tcpkeepalive 1   || { echo "WARN: failed to set tcpkeepalive"; ((errors++)) || true; }
+
+  if [[ "$errors" -gt 0 ]]; then
+    echo "⚠️  ${errors} parameter(s) failed to apply. Check sudo/pmset permissions."
+    return 1
+  fi
+  return 0
 }
 
 restore_defaults() {
+  # [L-3] These are NOT factory defaults — they are a conservative preset.
+  # For true factory settings, use: macpower restore (requires prior: macpower save)
   local scope_flag="$1" # -c or -a
-  # Reasonable macOS-like defaults (feel free to edit to your preferences)
-  sudo /usr/bin/pmset ${scope_flag} sleep 10
-  sudo /usr/bin/pmset ${scope_flag} standby 1
-  sudo /usr/bin/pmset ${scope_flag} autopoweroff 1
-  sudo /usr/bin/pmset ${scope_flag} powernap 1
-  sudo /usr/bin/pmset ${scope_flag} displaysleep 10
-  sudo /usr/bin/pmset ${scope_flag} disksleep 10
-  sudo /usr/bin/pmset ${scope_flag} tcpkeepalive 1
+  local errors=0
+
+  sudo /usr/bin/pmset "${scope_flag}" sleep 10         || { echo "WARN: failed to set sleep"; ((errors++)) || true; }
+  sudo /usr/bin/pmset "${scope_flag}" standby 1        || { echo "WARN: failed to set standby"; ((errors++)) || true; }
+  sudo /usr/bin/pmset "${scope_flag}" autopoweroff 1   || { echo "WARN: failed to set autopoweroff"; ((errors++)) || true; }
+  sudo /usr/bin/pmset "${scope_flag}" powernap 1       || { echo "WARN: failed to set powernap"; ((errors++)) || true; }
+  sudo /usr/bin/pmset "${scope_flag}" displaysleep 10  || { echo "WARN: failed to set displaysleep"; ((errors++)) || true; }
+  sudo /usr/bin/pmset "${scope_flag}" disksleep 10     || { echo "WARN: failed to set disksleep"; ((errors++)) || true; }
+  sudo /usr/bin/pmset "${scope_flag}" tcpkeepalive 1   || { echo "WARN: failed to set tcpkeepalive"; ((errors++)) || true; }
+
+  if [[ "$errors" -gt 0 ]]; then
+    echo "⚠️  ${errors} parameter(s) failed to apply. Check sudo/pmset permissions."
+    return 1
+  fi
+  return 0
 }
 
 save_backup() {
   echo "💾 Saving pmset custom settings to: ${BACKUP_FILE}"
   /usr/bin/pmset -g custom > "${BACKUP_FILE}"
+  # [L-1] Restrict backup file permissions
+  chmod 600 "${BACKUP_FILE}"
   echo "✅ Saved."
 }
 
@@ -167,11 +191,12 @@ restore_backup() {
 
   echo "♻️ Restoring pmset settings from: ${BACKUP_FILE}"
 
-  local block=""
+  local block="" errors=0
   while IFS= read -r line; do
-    if echo "$line" | grep -q "Battery Power"; then block="batt"; continue; fi
-    if echo "$line" | grep -q "AC Power"; then block="ac"; continue; fi
-    if echo "$line" | grep -q "UPS Power"; then block="ups"; continue; fi
+    # [C-2] Anchor block detection at line start to prevent substring matches
+    if echo "$line" | grep -qE "^Battery Power:"; then block="batt"; continue; fi
+    if echo "$line" | grep -qE "^AC Power:"; then block="ac"; continue; fi
+    if echo "$line" | grep -qE "^UPS Power:"; then block="ups"; continue; fi
 
     local key value
     key="$(echo "$line" | awk '{print $1}')"
@@ -179,14 +204,19 @@ restore_backup() {
 
     [[ -z "${key}" || -z "${value}" ]] && continue
 
+    # [C-1] Tolerate individual pmset failures to avoid partial restore abort
     case "$block" in
-      batt) sudo /usr/bin/pmset -b "${key}" "${value}" ;;
-      ac)   sudo /usr/bin/pmset -c "${key}" "${value}" ;;
-      ups)  sudo /usr/bin/pmset -u "${key}" "${value}" ;;
+      batt) sudo /usr/bin/pmset -b "${key}" "${value}" || { echo "WARN: failed to restore batt ${key}=${value}"; ((errors++)) || true; } ;;
+      ac)   sudo /usr/bin/pmset -c "${key}" "${value}" || { echo "WARN: failed to restore ac ${key}=${value}"; ((errors++)) || true; } ;;
+      ups)  sudo /usr/bin/pmset -u "${key}" "${value}" || { echo "WARN: failed to restore ups ${key}=${value}"; ((errors++)) || true; } ;;
       *)    ;;
     esac
   done < "${BACKUP_FILE}"
 
+  if [[ "$errors" -gt 0 ]]; then
+    echo "⚠️  Restored with ${errors} error(s). Some settings may not have been applied."
+    return 1
+  fi
   echo "✅ Restored."
 }
 
@@ -232,9 +262,10 @@ main() {
       print_status
       ;;
     off)
-      echo "🔄 Restoring defaults (scope: ${scope})..."
+      echo "🔄 Applying conservative preset (scope: ${scope})..."
+      echo "   Note: This is NOT factory defaults. For true restore, use: macpower restore"
       restore_defaults "${scope_flag}"
-      echo "✅ Restored."
+      echo "✅ Done."
       echo ""
       print_status
       ;;

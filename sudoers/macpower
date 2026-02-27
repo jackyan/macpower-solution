@@ -7,6 +7,11 @@
 # This grants passwordless access to /usr/bin/pmset only.
 # This is required for launchd (non-interactive) to apply pmset changes.
 #
-# Security note: this allows the user to run pmset without a password.
+# Security notes:
+# - This allows the user to run ALL pmset subcommands without a password,
+#   including pmset schedule shutdown/restart. sudoers cannot restrict
+#   pmset to specific subcommands.
+# - Ensure you trust this account fully before installing.
+# - To revoke, run: sudo rm -f /etc/sudoers.d/macpower
 
 YOUR_USERNAME ALL=(root) NOPASSWD: /usr/bin/pmset

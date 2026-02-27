@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# macpower-auto v3.3 — smart night automation wrapper (NO process dependency)
+# macpower-auto v3.4 — smart night automation wrapper (NO process dependency)
 #
 # - Conservative by default: only runs when on AC + Wi‑Fi connected.
 # - Lid closed is SKIP unless you manually pass --clamshell.
@@ -12,13 +12,18 @@ set -euo pipefail
 #   macpower-auto morning
 #   macpower-auto status
 
-# Resolve macpower path robustly
+# [M-5] Resolve macpower path robustly with validation
 if [[ -x "/opt/homebrew/bin/macpower" ]]; then
   MACPOWER="/opt/homebrew/bin/macpower"
 elif [[ -x "/usr/local/bin/macpower" ]]; then
   MACPOWER="/usr/local/bin/macpower"
 else
-  MACPOWER="$(cd "$(dirname "$0")" && pwd)/macpower"
+  MACPOWER="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/macpower" || true
+fi
+
+if [[ ! -x "${MACPOWER:-}" ]]; then
+  echo "ERROR: macpower not found or not executable: ${MACPOWER:-<unset>}" >&2
+  exit 1
 fi
 
 BACKUP_FILE="${HOME}/.macpower.pmset.bak"
@@ -27,10 +32,10 @@ MARK_FILE="${HOME}/.macpower.night.enabled"
 # Night policy target (effective values when enabled)
 TARGET_SLEEP="0"
 TARGET_STANDBY="0"
-TARGET_AUTOPOWEROFF="0"
 TARGET_POWERNAP="0"
 TARGET_DISPLAYSLEEP="1"
 TARGET_DISKSLEEP="5"
+TARGET_TCPKEEPALIVE="1"
 
 log() { echo "[$(date '+%F %T')] $*"; }
 
@@ -39,8 +44,9 @@ is_on_ac() {
 }
 
 wifi_device() {
+  # [H-4] More robust pattern: matches Wi-Fi/Wi‑Fi (Unicode hyphen), exits on first match
   /usr/sbin/networksetup -listallhardwareports \
-    | awk '/Hardware Port: Wi-Fi/{getline; print $2}'
+    | awk '/Hardware Port:.*Wi.?Fi/{getline; if ($1 == "Device:") {print $2; exit}}'
 }
 
 wifi_ssid() {
@@ -50,8 +56,10 @@ wifi_ssid() {
   # networksetup -getairportnetwork is deprecated on macOS Sonoma/Sequoia and
   # returns "You are not associated with an AirPort network." even when connected.
   # ipconfig getsummary is the reliable modern replacement.
+  # [H-1] Anchor pattern with ^[[:space:]]+ to avoid matching BSSID/ROAM_SSID
   local ssid
-  ssid="$(/usr/sbin/ipconfig getsummary "$dev" 2>/dev/null | awk '/[[:space:]]SSID[[:space:]]*:/{print $NF; exit}')"
+  ssid="$(/usr/sbin/ipconfig getsummary "$dev" 2>/dev/null \
+    | awk '/^[[:space:]]+SSID[[:space:]]*:/{print $NF; exit}')"
   [[ -z "$ssid" ]] && return 1
   echo "$ssid"
 }
@@ -67,7 +75,10 @@ lid_state() {
 }
 
 has_external_display() {
-  /usr/sbin/system_profiler SPDisplaysDataType 2>/dev/null | grep -qE "Connection Type:|Display Connector|External"
+  # [M-3] More precise detection: check for specific external connection types
+  # rather than broadly matching "External" which could appear in GPU descriptions
+  /usr/sbin/system_profiler SPDisplaysDataType 2>/dev/null \
+    | grep -qE "Connection Type:\s*(HDMI|DisplayPort|Thunderbolt|USB-C)"
 }
 
 ensure_backup() {
@@ -95,11 +106,13 @@ is_night_policy_active() {
   # autopoweroff is intentionally excluded: M-series Macs do not expose it
   # in "Currently in use" output, so checking it would always return false
   # on Apple Silicon, breaking the "already active" detection entirely.
+  # [M-1] tcpkeepalive added for consistency with macpower's detect_night_policy()
   echo "$out" | grep -qE "^\s*sleep\s+${TARGET_SLEEP}(\s|$)" || return 1
   echo "$out" | grep -qE "^\s*standby\s+${TARGET_STANDBY}(\s|$)" || return 1
   echo "$out" | grep -qE "^\s*powernap\s+${TARGET_POWERNAP}(\s|$)" || return 1
   echo "$out" | grep -qE "^\s*displaysleep\s+${TARGET_DISPLAYSLEEP}(\s|$)" || return 1
   echo "$out" | grep -qE "^\s*disksleep\s+${TARGET_DISKSLEEP}(\s|$)" || return 1
+  echo "$out" | grep -qE "^\s*tcpkeepalive\s+${TARGET_TCPKEEPALIVE}(\s|$)" || return 1
 
   return 0
 }
@@ -162,16 +175,28 @@ night() {
 
   ensure_backup
 
+  # [H-3] Handle macpower on failure explicitly: if it fails, log but do NOT
+  # write the mark file — however, some pmset params may have been applied.
   log "Applying macpower on ..."
-  "$MACPOWER" on
-
-  mark_enabled "applied"
-  log "Marked night enabled: $MARK_FILE"
+  if "$MACPOWER" on --force; then
+    mark_enabled "applied"
+    log "Marked night enabled: $MARK_FILE"
+  else
+    log "ERROR: macpower on failed (exit $?). Night policy may be partially applied."
+    log "Mark NOT written — morning restore will NOT auto-trigger."
+    log "Please check sudo/pmset permissions and run: macpower status"
+    exit 1
+  fi
 
   log "macpower-auto night: done"
 }
 
 morning() {
+  # [L-5] Validate no extra arguments
+  if [[ $# -gt 0 ]]; then
+    log "WARNING: morning takes no arguments; ignoring: $*"
+  fi
+
   log "macpower-auto morning: start"
 
   # Guardrail: only restore if we enabled/marked night mode before
@@ -182,16 +207,25 @@ morning() {
 
   log "Night mark found. Proceeding to restore."
 
+  # [C-3] Ensure clear_mark always executes, even if restore fails.
+  # Without this, a restore failure (e.g. sudoers revoked) would leave the
+  # mark file forever, causing an infinite retry loop every morning.
+  local restore_ok=0
   if [[ -f "$BACKUP_FILE" ]]; then
     log "Restoring from backup via: macpower restore"
-    "$MACPOWER" restore
+    "$MACPOWER" restore && restore_ok=1 || log "WARN: macpower restore failed (exit $?)"
   else
     log "No backup file. Falling back to: macpower off"
-    "$MACPOWER" off
+    "$MACPOWER" off && restore_ok=1 || log "WARN: macpower off failed (exit $?)"
   fi
 
+  # Always clear mark to prevent infinite retry loop
   clear_mark
-  log "Cleared night mark."
+  log "Cleared night mark (restore_ok=${restore_ok})."
+
+  if [[ "$restore_ok" -eq 0 ]]; then
+    log "WARNING: Restore did not fully succeed. Please run: macpower status"
+  fi
 
   log "macpower-auto morning: done"
 }
@@ -203,7 +237,16 @@ status() {
   [[ -f "$BACKUP_FILE" ]] && echo "Backup: present" || echo "Backup: missing"
   echo "Night mark: $MARK_FILE"
   [[ -f "$MARK_FILE" ]] && echo "Night mark: present" || echo "Night mark: missing"
-  echo "AC Power: $([ "$(/usr/bin/pmset -g batt | head -n 1 | grep -c 'AC Power')" -eq 1 ] && echo yes || echo no)"
+
+  # [M-4] Avoid grep -c in $([ ... ]) which crashes under set -e when no match
+  local ac_power
+  if /usr/bin/pmset -g batt 2>/dev/null | head -n 1 | grep -q 'AC Power'; then
+    ac_power="yes"
+  else
+    ac_power="no"
+  fi
+  echo "AC Power: ${ac_power}"
+
   echo "Wi-Fi SSID: $(wifi_ssid || echo 'N/A')"
   echo "Lid state: $(lid_state)"
   has_external_display && echo "External display: yes" || echo "External display: no"
@@ -212,7 +255,8 @@ status() {
 
 case "${1:-}" in
   night) shift; night "$@" ;;
-  morning) morning ;;
+  # [L-5] Pass remaining args to morning for validation
+  morning) shift; morning "$@" ;;
   status) status ;;
   *)
     echo "Usage: macpower-auto {night|morning|status}"
