@@ -9,22 +9,31 @@ set -euo pipefail
 #   macpower status
 #   macpower save
 #   macpower restore
+#   macpower version
 #
 # Notes:
 # - Default scope is AC only (-c). Use --all / -a to apply to all.
 # - Uses sudo to run /usr/bin/pmset. For automation, configure sudoers NOPASSWD for /usr/bin/pmset.
 # - Backup file: ~/.macpower.pmset.bak (saved from `pmset -g custom`)
 
+VERSION="1.0.0"
+
+# Known pmset keys (whitelist for safe restore)
+KNOWN_PMSET_KEYS="sleep displaysleep disksleep standby standbydelayhigh standbydelaylow autopoweroff autopoweroffdelay powernap tcpkeepalive ttyskeepawake lidwake acwake lessbright halfdim highstandbythreshold hibernatemode hibernatefile womp networkoversleep sleep_on_power_button gpuswitch DestroyFVKeyOnStandby proximitywake"
+
 BACKUP_FILE="${HOME}/.macpower.pmset.bak"
 
 usage() {
-  cat <<'USAGE'
+  cat <<USAGE
+macpower v${VERSION} — Low-power always-online mode controller
+
 Usage:
   macpower on [--all|-a]
   macpower off [--all|-a]
   macpower status
   macpower save
   macpower restore
+  macpower version
 
 Examples:
   macpower save
@@ -40,12 +49,12 @@ USAGE
 }
 
 print_status() {
-  echo "🔎 Power source: $(/usr/bin/pmset -g batt 2>/dev/null | head -n 1)"
+  echo "Power source: $(/usr/bin/pmset -g batt 2>/dev/null | head -n 1)"
   echo ""
-  echo "📌 Currently in use:"
+  echo "Currently in use:"
   /usr/bin/pmset -g 2>/dev/null | sed -n '/Currently in use:/,$p' | head -n 60
   echo ""
-  echo "⚙️ Custom settings (AC/Battery/UPS):"
+  echo "Custom settings (AC/Battery/UPS):"
   /usr/bin/pmset -g custom 2>/dev/null
 }
 
@@ -55,63 +64,111 @@ apply_policy() {
   # "Extreme low-power but always-online" targets:
   # - prevent system sleep / standby / autopoweroff
   # - keep screen off quickly and let disks sleep sooner
-  sudo /usr/bin/pmset ${scope_flag} sleep 0
-  sudo /usr/bin/pmset ${scope_flag} standby 0
-  sudo /usr/bin/pmset ${scope_flag} autopoweroff 0
-  sudo /usr/bin/pmset ${scope_flag} powernap 0
-  sudo /usr/bin/pmset ${scope_flag} displaysleep 1
-  sudo /usr/bin/pmset ${scope_flag} disksleep 5
-  sudo /usr/bin/pmset ${scope_flag} tcpkeepalive 1
+  sudo /usr/bin/pmset "${scope_flag}" sleep 0
+  sudo /usr/bin/pmset "${scope_flag}" standby 0
+  sudo /usr/bin/pmset "${scope_flag}" autopoweroff 0
+  sudo /usr/bin/pmset "${scope_flag}" powernap 0
+  sudo /usr/bin/pmset "${scope_flag}" displaysleep 1
+  sudo /usr/bin/pmset "${scope_flag}" disksleep 5
+  sudo /usr/bin/pmset "${scope_flag}" tcpkeepalive 1
 }
 
 restore_defaults() {
   local scope_flag="$1" # -c or -a
   # Reasonable macOS-like defaults (feel free to edit to your preferences)
-  sudo /usr/bin/pmset ${scope_flag} sleep 10
-  sudo /usr/bin/pmset ${scope_flag} standby 1
-  sudo /usr/bin/pmset ${scope_flag} autopoweroff 1
-  sudo /usr/bin/pmset ${scope_flag} powernap 1
-  sudo /usr/bin/pmset ${scope_flag} displaysleep 10
-  sudo /usr/bin/pmset ${scope_flag} disksleep 10
-  sudo /usr/bin/pmset ${scope_flag} tcpkeepalive 1
+  sudo /usr/bin/pmset "${scope_flag}" sleep 10
+  sudo /usr/bin/pmset "${scope_flag}" standby 1
+  sudo /usr/bin/pmset "${scope_flag}" autopoweroff 1
+  sudo /usr/bin/pmset "${scope_flag}" powernap 1
+  sudo /usr/bin/pmset "${scope_flag}" displaysleep 10
+  sudo /usr/bin/pmset "${scope_flag}" disksleep 10
+  sudo /usr/bin/pmset "${scope_flag}" tcpkeepalive 1
 }
 
 save_backup() {
-  echo "💾 Saving pmset custom settings to: ${BACKUP_FILE}"
+  echo "Saving pmset custom settings to: ${BACKUP_FILE}"
   /usr/bin/pmset -g custom > "${BACKUP_FILE}"
-  echo "✅ Saved."
+  echo "Saved."
+}
+
+is_known_pmset_key() {
+  local needle="$1"
+  local k
+  for k in ${KNOWN_PMSET_KEYS}; do
+    [[ "$k" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+is_valid_pmset_value() {
+  # pmset values are integers (including 0); some may be paths (hibernatefile)
+  [[ "$1" =~ ^[0-9]+$ ]] || [[ "$1" =~ ^/ ]]
 }
 
 restore_backup() {
   if [[ ! -f "${BACKUP_FILE}" ]]; then
-    echo "❌ Backup not found: ${BACKUP_FILE}"
+    echo "Backup not found: ${BACKUP_FILE}"
     echo "Run: macpower save"
     exit 1
   fi
 
-  echo "♻️ Restoring pmset settings from: ${BACKUP_FILE}"
+  echo "Restoring pmset settings from: ${BACKUP_FILE}"
 
   local block=""
+  local restored=0
+  local skipped=0
+
   while IFS= read -r line; do
-    if echo "$line" | grep -q "Battery Power"; then block="batt"; continue; fi
-    if echo "$line" | grep -q "AC Power"; then block="ac"; continue; fi
-    if echo "$line" | grep -q "UPS Power"; then block="ups"; continue; fi
+    # Detect section headers
+    if [[ "$line" == *"Battery Power"* ]]; then block="batt"; continue; fi
+    if [[ "$line" == *"AC Power"* ]]; then block="ac"; continue; fi
+    if [[ "$line" == *"UPS Power"* ]]; then block="ups"; continue; fi
+
+    # Skip lines before any section header
+    [[ -z "$block" ]] && continue
+
+    # Strip leading/trailing whitespace and extract key/value
+    local trimmed
+    trimmed="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+    # Skip empty lines and comment-like lines
+    [[ -z "$trimmed" ]] && continue
+    [[ "$trimmed" == \#* ]] && continue
 
     local key value
-    key="$(echo "$line" | awk '{print $1}')"
-    value="$(echo "$line" | awk '{print $2}')"
+    key="$(echo "$trimmed" | awk '{print $1}')"
+    value="$(echo "$trimmed" | awk '{print $2}')"
 
-    [[ -z "${key}" || -z "${value}" ]] && continue
+    # Skip if key or value is empty
+    if [[ -z "${key:-}" || -z "${value:-}" ]]; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+
+    # Validate key against whitelist
+    if ! is_known_pmset_key "$key"; then
+      echo "  [SKIP] Unknown key: ${key} (not in whitelist)"
+      skipped=$((skipped + 1))
+      continue
+    fi
+
+    # Validate value format
+    if ! is_valid_pmset_value "$value"; then
+      echo "  [SKIP] Invalid value for ${key}: ${value} (expected integer or path)"
+      skipped=$((skipped + 1))
+      continue
+    fi
 
     case "$block" in
       batt) sudo /usr/bin/pmset -b "${key}" "${value}" ;;
       ac)   sudo /usr/bin/pmset -c "${key}" "${value}" ;;
       ups)  sudo /usr/bin/pmset -u "${key}" "${value}" ;;
-      *)    ;;
     esac
+    restored=$((restored + 1))
+
   done < "${BACKUP_FILE}"
 
-  echo "✅ Restored."
+  echo "Restored ${restored} setting(s), skipped ${skipped}."
 }
 
 main() {
@@ -140,19 +197,25 @@ main() {
     status)  print_status ;;
     save)    save_backup ;;
     restore) restore_backup ;;
+    version|--version|-V)
+      echo "macpower v${VERSION}"
+      ;;
     on)
-      echo "🔧 Enabling low-power always-online mode (scope: ${scope})..."
+      echo "Enabling low-power always-online mode (scope: ${scope})..."
       apply_policy "${scope_flag}"
-      echo "✅ Enabled."
+      echo "Enabled."
       echo ""
       print_status
       ;;
     off)
-      echo "🔄 Restoring defaults (scope: ${scope})..."
+      echo "Restoring defaults (scope: ${scope})..."
       restore_defaults "${scope_flag}"
-      echo "✅ Restored."
+      echo "Restored."
       echo ""
       print_status
+      ;;
+    -h|--help)
+      usage
       ;;
     *)
       echo "Unknown action: ${action}"

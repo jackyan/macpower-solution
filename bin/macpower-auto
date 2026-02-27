@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# macpower-auto v3.3 — smart night automation wrapper (NO process dependency)
+# macpower-auto — smart night automation wrapper (NO process dependency)
 #
 # - Conservative by default: only runs when on AC + Wi‑Fi connected.
 # - Lid closed is SKIP unless you manually pass --clamshell.
@@ -11,6 +11,9 @@ set -euo pipefail
 #   macpower-auto night [--clamshell]
 #   macpower-auto morning
 #   macpower-auto status
+#   macpower-auto version
+
+VERSION="3.3.0"
 
 # Resolve macpower path robustly
 if [[ -x "/opt/homebrew/bin/macpower" ]]; then
@@ -32,7 +35,29 @@ TARGET_POWERNAP="0"
 TARGET_DISPLAYSLEEP="1"
 TARGET_DISKSLEEP="5"
 
-log() { echo "[$(date '+%F %T')] $*"; }
+LOG_MAX_BYTES=524288  # 512 KB
+
+rotate_log_if_needed() {
+  # Rotate stdout log file if it exceeds LOG_MAX_BYTES.
+  # We detect our log file from /proc or via lsof; if not possible, skip.
+  local logfile=""
+  if [[ -L /dev/fd/1 ]]; then
+    logfile="$(readlink /dev/fd/1 2>/dev/null || true)"
+  fi
+  [[ -z "$logfile" || ! -f "$logfile" ]] && return 0
+
+  local size
+  size="$(stat -f%z "$logfile" 2>/dev/null || stat -c%s "$logfile" 2>/dev/null || echo 0)"
+  if [[ "$size" -gt "$LOG_MAX_BYTES" ]]; then
+    # Keep the last ~256KB
+    tail -c 262144 "$logfile" > "${logfile}.tmp" 2>/dev/null && mv "${logfile}.tmp" "$logfile" 2>/dev/null || true
+  fi
+}
+
+log() {
+  rotate_log_if_needed
+  echo "[$(date '+%F %T')] $*"
+}
 
 is_on_ac() {
   /usr/bin/pmset -g batt | head -n 1 | grep -q "AC Power"
@@ -86,12 +111,13 @@ is_night_policy_active() {
   local out
   out="$(/usr/bin/pmset -g 2>/dev/null | sed -n '/Currently in use:/,$p')"
 
-  echo "$out" | grep -qE "^ standby\\s+${TARGET_STANDBY}(\\s|$)" || return 1
-  echo "$out" | grep -qE "^ sleep\\s+${TARGET_SLEEP}(\\s|$)" || return 1
-  echo "$out" | grep -qE "^ autopoweroff\\s+${TARGET_AUTOPOWEROFF}(\\s|$)" || return 1
-  echo "$out" | grep -qE "^ powernap\\s+${TARGET_POWERNAP}(\\s|$)" || return 1
-  echo "$out" | grep -qE "^ displaysleep\\s+${TARGET_DISPLAYSLEEP}(\\s|$)" || return 1
-  echo "$out" | grep -qE "^ disksleep\\s+${TARGET_DISKSLEEP}(\\s|$)" || return 1
+  # Use \s+ for leading whitespace to handle tabs, multiple spaces, etc.
+  echo "$out" | grep -qE "^\\s+standby\\s+${TARGET_STANDBY}(\\s|$)" || return 1
+  echo "$out" | grep -qE "^\\s+sleep\\s+${TARGET_SLEEP}(\\s|$)" || return 1
+  echo "$out" | grep -qE "^\\s+autopoweroff\\s+${TARGET_AUTOPOWEROFF}(\\s|$)" || return 1
+  echo "$out" | grep -qE "^\\s+powernap\\s+${TARGET_POWERNAP}(\\s|$)" || return 1
+  echo "$out" | grep -qE "^\\s+displaysleep\\s+${TARGET_DISPLAYSLEEP}(\\s|$)" || return 1
+  echo "$out" | grep -qE "^\\s+disksleep\\s+${TARGET_DISKSLEEP}(\\s|$)" || return 1
 
   return 0
 }
@@ -206,8 +232,13 @@ case "${1:-}" in
   night) shift; night "$@" ;;
   morning) morning ;;
   status) status ;;
+  version|--version|-V)
+    echo "macpower-auto v${VERSION}"
+    ;;
   *)
-    echo "Usage: macpower-auto {night|morning|status}"
+    echo "macpower-auto v${VERSION}"
+    echo ""
+    echo "Usage: macpower-auto {night|morning|status|version}"
     echo "  macpower-auto night [--clamshell]"
     exit 1
     ;;
