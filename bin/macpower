@@ -46,10 +46,11 @@ detect_night_policy() {
   local out
   out="$(/usr/bin/pmset -g 2>/dev/null | sed -n '/Currently in use:/,$p')"
 
-  # All these conditions must mirror apply_policy() exactly
+  # Check the parameters that reliably appear in pmset -g on both Intel and M-series.
+  # autopoweroff is intentionally excluded: M-series Macs do not expose it in
+  # "Currently in use" output, so checking it would always return false on Apple Silicon.
   echo "$out" | grep -qE "^\s*sleep\s+0(\s|$)" && \
   echo "$out" | grep -qE "^\s*standby\s+0(\s|$)" && \
-  echo "$out" | grep -qE "^\s*autopoweroff\s+0(\s|$)" && \
   echo "$out" | grep -qE "^\s*powernap\s+0(\s|$)" && \
   echo "$out" | grep -qE "^\s*displaysleep\s+1(\s|$)" && \
   echo "$out" | grep -qE "^\s*disksleep\s+5(\s|$)" && \
