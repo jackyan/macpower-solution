@@ -1,6 +1,6 @@
 # macpower 完整解决方案（M 系列 / 夜间不断线 / 省电）
 
-这个包把我们讨论过的“**极致省电但不断线**”方案整理成一个可安装的完整体，包括：
+这个包把"**极致省电但不断线**"方案整理成一个可安装的完整体，包括：
 - 系统级命令：`macpower`
 - 智能自动化包装：`macpower-auto`（v3.3）
 - launchd 定时任务：23:00 自动开启、08:00 自动恢复（带环境判断与护栏）
@@ -14,26 +14,64 @@
 ## 一、你将得到什么
 
 ### 1) `macpower`（系统级 CLI）
-- `macpower on`：开启夜跑策略（默认只影响 **插电 AC**）
-- `macpower off`：恢复“类默认”电源策略（AC）
-- `macpower save`：备份当前 `pmset -g custom` 到 `~/.macpower.pmset.bak`
-- `macpower restore`：从备份回滚（推荐优先用这个）
-- `macpower status`：查看当前状态
+
+| 命令 | 说明 |
+|------|------|
+| `macpower on` | 开启夜跑策略（默认只影响 **插电 AC**），网络未连接时自动 SKIP |
+| `macpower on --force` | 开启夜跑策略，跳过网络检测 |
+| `macpower off` | 恢复"类默认"电源策略（AC） |
+| `macpower save` | 备份当前 `pmset -g custom` 到 `~/.macpower.pmset.bak` |
+| `macpower restore` | 从备份回滚（推荐优先用这个） |
+| `macpower status` | 查看当前状态（含中文模式说明） |
 
 **夜跑策略（AC）参数：**
-- `sleep 0` `standby 0` `autopoweroff 0` `powernap 0`
-- `displaysleep 1` `disksleep 5`
+- `sleep 0`、`standby 0`、`autopoweroff 0`、`powernap 0`
+- `displaysleep 1`、`disksleep 5`
 - `tcpkeepalive 1`
 
+> **关于 disksleep 5**：磁盘休眠只影响存储硬件的省电状态，**不会中断正在运行的程序或网络任务**。运行中的进程和网络连接都在内存里，与磁盘无关。如需访问磁盘（如写日志），macOS 会在毫秒级内自动唤醒磁盘，进程不会失败。
+
+**`macpower status` 输出说明：**
+
+`status` 命令会在原始 pmset 参数上方，自动显示一段**中文模式说明**，直接告诉你：
+- 当前处于哪个模式（夜跑策略 / 非夜跑策略）
+- 系统休眠与屏幕熄灭的实际时间
+- **能否离开电脑跑长期任务（YES / NO）**
+
+示例（夜跑策略已开启）：
+```
+┌─ 📋 电源模式说明 ─────────────────────────────────────┐
+│
+│  当前模式：🌙 极致省电长期任务模式（Night Policy Active）
+│
+│  关键特性：
+│    • 系统永不休眠（sleep=0）：网络连接始终保活
+│    • 快速屏幕熄灭（1分钟）：最小化功耗
+│    • 磁盘快速休眠（5分钟）：节省磁盘电能
+│    • TCP保活已启用（tcpkeepalive=1）
+│
+│  📌 长期任务支持：✅ YES
+│     • 24小时不间断运行：✓
+│     • Wi-Fi 保持连接：✓
+│     • 网络通信稳定：✓
+│     • 离开前无需干预：✓
+│
+│  电源来源：Now drawing from 'AC Power'
+│
+└──────────────────────────────────────────────────────┘
+```
+
 ### 2) `macpower-auto`（智能判断）
-- 23:00 触发时，会先检查：
-  - 是否插电（AC）。不插电直接 SKIP（你说你多数晚上不插电，这就是预期行为）
+
+- **23:00 触发**时，会先检查：
+  - 是否插电（AC）。不插电直接 SKIP
   - Wi‑Fi 是否连接到某个 SSID。未连接则 SKIP
-  - 盖子是否合上：默认 SKIP（你说几乎不合盖跑）
-  - 如果你手动开启了 night 策略，它会识别“已开启”，不会重复设置，但会确保早上会恢复
-- morning 恢复时：只有在 night 真开启/标记过才会恢复，避免误改。
+  - 盖子是否合上：默认 SKIP
+  - 是否已是夜跑策略：若已开启（包括手动 `macpower on`），**识别后跳过，只补写标记文件确保早上会恢复**
+- **morning 恢复**时：只有在 night 真开启/标记过才会恢复，避免误改。
 
 ### 3) LaunchAgents
+
 - `com.user.macpower.night`：每天 23:00 运行 `macpower-auto night`
 - `com.user.macpower.morning`：每天 08:00 运行 `macpower-auto morning`
 - 日志：
@@ -45,7 +83,8 @@
 ## 二、安装
 
 ### 方式 A：一键安装（推荐）
-在解压目录里运行：
+
+在项目目录里运行：
 
 ```bash
 bash scripts/install.sh
@@ -72,7 +111,7 @@ macpower save
 
 ## 三、sudoers（自动化必需）
 
-`pmset` 修改系统电源策略需要 root 权限。  
+`pmset` 修改系统电源策略需要 root 权限。
 launchd 到点执行没有交互终端，不能输入 sudo 密码，所以需要放行：
 
 - 允许你对 `/usr/bin/pmset` 使用免密 sudo
@@ -99,9 +138,10 @@ sudo /usr/sbin/visudo -cf /etc/sudoers.d/macpower
 
 ### 手动开启/恢复
 ```bash
-macpower on
-macpower status
-macpower restore   # 推荐回滚到你自己的备份
+macpower on          # 开启夜跑策略（需有网络连接）
+macpower on --force  # 开启夜跑策略（跳过网络检测）
+macpower status      # 查看当前模式和长期任务支持状态
+macpower restore     # 推荐：从备份回滚到原始设置
 ```
 
 ### 查看自动化状态
@@ -124,19 +164,45 @@ macpower-auto morning
 
 ## 五、维护与排障
 
-### 1) 为什么晚上经常“什么都没发生”？
-因为你多数晚上不插电：`macpower-auto night` 会检测到非 AC -> SKIP（这是你要求的“保守逻辑”）。
+### 1) 为什么晚上经常"什么都没发生"？
 
-### 2) 我手动开了 `macpower on`，结果第二天忘了关怎么办？
-23:00 的任务会检测到“night policy already active”，并写入标记文件，让 08:00 自动 restore（除非你那晚不插电/没跑到）。
+两种可能：
+- **不插电**：`macpower-auto night` 检测到非 AC → SKIP（保守逻辑，预期行为）
+- **Wi-Fi 未连接**：未连接网络 → SKIP
 
-### 3) 查看日志
+查看日志确认原因：
+```bash
+tail -n 50 /tmp/macpower_night.log
+```
+
+### 2) 我手动开了 `macpower on`，晚上 23:00 会重复执行吗？
+
+不会重复 apply。23:00 的任务会检测到"night policy already active"，直接跳过并补写标记文件，确保 08:00 自动 restore。完整流程：
+
+```
+手动 macpower on → 夜跑策略已激活 + mark file 写入
+23:00 → 检测到已激活 → 静默跳过（no changes applied）
+08:00 → 发现 mark file → macpower restore → 清除 mark file
+```
+
+### 3) `macpower on` 提示 SKIP: No network connection 怎么办？
+
+说明当前 Wi-Fi 和以太网都未连接。连接网络后重试，或强制执行：
+```bash
+macpower on --force
+```
+
+### 4) 磁盘休眠（disksleep 5）会影响运行中的程序吗？
+
+**不影响。** 磁盘休眠只是让存储硬件进入省电状态，CPU、内存、网络全部保持活跃。运行中的程序和网络连接不依赖磁盘。如果程序需要写磁盘（写日志等），macOS 会在毫秒级内自动唤醒磁盘，进程透明等待，不会报错或中断。
+
+### 5) 查看日志
 ```bash
 tail -n 200 /tmp/macpower_night.log /tmp/macpower_night.err
 tail -n 200 /tmp/macpower_morning.log /tmp/macpower_morning.err
 ```
 
-### 4) 想改时间（比如 22:30 / 7:30）
+### 6) 想改时间（比如 22:30 / 7:30）
 编辑 `~/Library/LaunchAgents/*.plist` 的 `StartCalendarInterval`，然后：
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.user.macpower.night.plist
@@ -145,12 +211,12 @@ launchctl load ~/Library/LaunchAgents/com.user.macpower.night.plist
 launchctl load ~/Library/LaunchAgents/com.user.macpower.morning.plist
 ```
 
-### 5) 如果你确实想偶尔合盖跑（可选）
-你几乎不需要，但脚本保留了“显式合盖跑”开关：
+### 7) 如果你确实想偶尔合盖跑（可选）
+脚本保留了"显式合盖跑"开关：
 ```bash
 macpower-auto night --clamshell
 ```
-它会要求检测到外接显示器/ dummy HDMI，否则拒绝（避免你误以为合盖能跑而实际睡眠断网）。
+它会要求检测到外接显示器 / dummy HDMI，否则拒绝（避免合盖实际睡眠断网）。
 
 ---
 
@@ -172,4 +238,3 @@ sudo rm -f /etc/sudoers.d/macpower
 - 本方案通过 sudoers 放行了 `pmset` 免密执行（只放行一个系统命令）。
 - 这是为了让 launchd 自动化在无交互环境下生效。
 - 如果你不希望免密，请不要装 sudoers；但自动化将无法修改电源策略（只会在日志里失败）。
-
