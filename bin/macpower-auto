@@ -86,12 +86,14 @@ is_night_policy_active() {
   local out
   out="$(/usr/bin/pmset -g 2>/dev/null | sed -n '/Currently in use:/,$p')"
 
-  echo "$out" | grep -qE "^ standby\\s+${TARGET_STANDBY}(\\s|$)" || return 1
-  echo "$out" | grep -qE "^ sleep\\s+${TARGET_SLEEP}(\\s|$)" || return 1
-  echo "$out" | grep -qE "^ autopoweroff\\s+${TARGET_AUTOPOWEROFF}(\\s|$)" || return 1
-  echo "$out" | grep -qE "^ powernap\\s+${TARGET_POWERNAP}(\\s|$)" || return 1
-  echo "$out" | grep -qE "^ displaysleep\\s+${TARGET_DISPLAYSLEEP}(\\s|$)" || return 1
-  echo "$out" | grep -qE "^ disksleep\\s+${TARGET_DISKSLEEP}(\\s|$)" || return 1
+  # autopoweroff is intentionally excluded: M-series Macs do not expose it
+  # in "Currently in use" output, so checking it would always return false
+  # on Apple Silicon, breaking the "already active" detection entirely.
+  echo "$out" | grep -qE "^\s*sleep\s+${TARGET_SLEEP}(\s|$)" || return 1
+  echo "$out" | grep -qE "^\s*standby\s+${TARGET_STANDBY}(\s|$)" || return 1
+  echo "$out" | grep -qE "^\s*powernap\s+${TARGET_POWERNAP}(\s|$)" || return 1
+  echo "$out" | grep -qE "^\s*displaysleep\s+${TARGET_DISPLAYSLEEP}(\s|$)" || return 1
+  echo "$out" | grep -qE "^\s*disksleep\s+${TARGET_DISKSLEEP}(\s|$)" || return 1
 
   return 0
 }
